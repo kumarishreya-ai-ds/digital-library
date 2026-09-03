@@ -14,16 +14,211 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      admin_settings: {
+        Row: {
+          address: string | null
+          contact_email: string | null
+          contact_phone: string | null
+          full_day_price: number | null
+          half_day_price: number | null
+          id: boolean
+          owner_name: string | null
+          qr_image_path: string | null
+          receiver_name: string | null
+          timings: string | null
+          updated_at: string
+          upi_id: string | null
+        }
+        Insert: {
+          address?: string | null
+          contact_email?: string | null
+          contact_phone?: string | null
+          full_day_price?: number | null
+          half_day_price?: number | null
+          id?: boolean
+          owner_name?: string | null
+          qr_image_path?: string | null
+          receiver_name?: string | null
+          timings?: string | null
+          updated_at?: string
+          upi_id?: string | null
+        }
+        Update: {
+          address?: string | null
+          contact_email?: string | null
+          contact_phone?: string | null
+          full_day_price?: number | null
+          half_day_price?: number | null
+          id?: boolean
+          owner_name?: string | null
+          qr_image_path?: string | null
+          receiver_name?: string | null
+          timings?: string | null
+          updated_at?: string
+          upi_id?: string | null
+        }
+        Relationships: []
+      }
+      entries: {
+        Row: {
+          amount: number | null
+          created_at: string
+          entry_code: string | null
+          entry_date: string
+          entry_time: string
+          entry_type: Database["public"]["Enums"]["entry_type"]
+          id: string
+          status: Database["public"]["Enums"]["entry_status"]
+          student_id: string
+          updated_at: string
+        }
+        Insert: {
+          amount?: number | null
+          created_at?: string
+          entry_code?: string | null
+          entry_date: string
+          entry_time: string
+          entry_type: Database["public"]["Enums"]["entry_type"]
+          id?: string
+          status?: Database["public"]["Enums"]["entry_status"]
+          student_id: string
+          updated_at?: string
+        }
+        Update: {
+          amount?: number | null
+          created_at?: string
+          entry_code?: string | null
+          entry_date?: string
+          entry_time?: string
+          entry_type?: Database["public"]["Enums"]["entry_type"]
+          id?: string
+          status?: Database["public"]["Enums"]["entry_status"]
+          student_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "entries_student_id_fkey"
+            columns: ["student_id"]
+            isOneToOne: false
+            referencedRelation: "students"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      payments: {
+        Row: {
+          admin_note: string | null
+          amount: number | null
+          created_at: string
+          entry_id: string
+          id: string
+          method: string
+          screenshot_path: string | null
+          status: Database["public"]["Enums"]["pay_status"]
+          updated_at: string
+          utr: string | null
+          verified_at: string | null
+          verified_by: string | null
+        }
+        Insert: {
+          admin_note?: string | null
+          amount?: number | null
+          created_at?: string
+          entry_id: string
+          id?: string
+          method?: string
+          screenshot_path?: string | null
+          status?: Database["public"]["Enums"]["pay_status"]
+          updated_at?: string
+          utr?: string | null
+          verified_at?: string | null
+          verified_by?: string | null
+        }
+        Update: {
+          admin_note?: string | null
+          amount?: number | null
+          created_at?: string
+          entry_id?: string
+          id?: string
+          method?: string
+          screenshot_path?: string | null
+          status?: Database["public"]["Enums"]["pay_status"]
+          updated_at?: string
+          utr?: string | null
+          verified_at?: string | null
+          verified_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "payments_entry_id_fkey"
+            columns: ["entry_id"]
+            isOneToOne: false
+            referencedRelation: "entries"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      students: {
+        Row: {
+          created_at: string
+          full_name: string
+          id: string
+          mobile: string
+        }
+        Insert: {
+          created_at?: string
+          full_name: string
+          id?: string
+          mobile: string
+        }
+        Update: {
+          created_at?: string
+          full_name?: string
+          id?: string
+          mobile?: string
+        }
+        Relationships: []
+      }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin"
+      entry_status: "pending" | "confirmed" | "rejected"
+      entry_type: "half_day" | "full_day"
+      pay_status: "pending" | "verified" | "rejected"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +345,11 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin"],
+      entry_status: ["pending", "confirmed", "rejected"],
+      entry_type: ["half_day", "full_day"],
+      pay_status: ["pending", "verified", "rejected"],
+    },
   },
 } as const

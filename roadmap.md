@@ -1,0 +1,1 @@
+- [ ] Complete student entry, payment submission, admin verification/settings, and verified entry pass while preserving the current Shri Ganesh Library design.

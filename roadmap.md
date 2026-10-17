@@ -1,0 +1,5 @@
+- [ ] Update branding to “Shree Ganesh Digital Library” and apply the supplied address, phone, and email.
+- [ ] Implement 20-seat, date/shift availability and conflict-safe temporary booking holds, with editable shift prices and no demo availability.
+- [ ] Complete UPI payment submission, private evidence storage, admin review, and verified-only entry pass.
+- [ ] Add secure student/admin sign-in and resolve which admission/attendance modules are expected.
+- [ ] Validate the student booking and admin verification flow against the live backend; report blockers for unavailable accounts/configuration.

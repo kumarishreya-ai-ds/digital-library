@@ -3,3 +3,4 @@
 - [ ] Complete UPI payment submission, private evidence storage, admin review, and verified-only entry pass.
 - [ ] Add secure student/admin sign-in and resolve which admission/attendance modules are expected.
 - [ ] Validate the student booking and admin verification flow against the live backend; report blockers for unavailable accounts/configuration.
+- [ ] Review the uploaded booking-icon fix and production-readiness instructions; add any newly requested fixes to the implementation scope.

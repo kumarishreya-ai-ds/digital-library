@@ -47,22 +47,39 @@ const entrySchema = z.object({
   entryTime: z.string().regex(/^\d{2}:\d{2}$/, "सही समय चुनें"),
 });
 
-const paymentSchema = z.object({
-  entryCode: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^SGL-\d{4}-\d{5}$/, "सही Entry ID डालें (जैसे SGL-2026-00001)"),
-  mobile: mobileSchema,
-  utr: z
-    .string()
-    .trim()
-    .min(6, "UTR / Transaction ID कम से कम 6 अक्षर का होता है")
-    .max(40, "UTR बहुत लंबा है")
-    .regex(/^[A-Za-z0-9-]+$/, "UTR में केवल अक्षर और अंक हो सकते हैं"),
-  screenshotBase64: z.string().max(7_000_000).optional(),
-  screenshotType: z.enum(["image/png", "image/jpeg", "image/webp"]).optional(),
-});
+const paymentSchema = z
+  .object({
+    entryCode: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .regex(/^SGL-\d{4}-\d{5}$/, "सही Entry ID डालें (जैसे SGL-2026-00001)"),
+    mobile: mobileSchema,
+    utr: z
+      .string()
+      .trim()
+      .min(6, "UTR / Transaction ID कम से कम 6 अक्षर का होता है")
+      .max(40, "UTR बहुत लंबा है")
+      .regex(/^[A-Za-z0-9-]+$/, "UTR में केवल अक्षर और अंक हो सकते हैं"),
+    screenshotBase64: z
+      .string()
+      .min(1, "स्क्रीनशॉट खाली है")
+      .max(7_000_000)
+      .regex(
+        /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,
+        "सही स्क्रीनशॉट फ़ाइल चुनें",
+      )
+      .optional(),
+    screenshotType: z.enum(["image/png", "image/jpeg", "image/webp"]).optional(),
+  })
+  .superRefine(({ screenshotBase64, screenshotType }, ctx) => {
+    if ((screenshotBase64 === undefined) !== (screenshotType === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "स्क्रीनशॉट फ़ाइल की जानकारी अधूरी है",
+      });
+    }
+  });
 
 const lookupSchema = z.object({
   entryCode: z
@@ -127,13 +144,14 @@ export const createEntry = createServerFn({ method: "POST" })
       throw new Error("बीती हुई तारीख नहीं चुन सकते");
     }
 
-    const { data: existingStudent } = await supabaseAdmin
+    const studentLookup = await supabaseAdmin
       .from("students")
       .select("id, full_name")
       .eq("mobile", data.mobile)
       .maybeSingle();
+    if (studentLookup.error) throw new Error("छात्र की जानकारी जांची नहीं जा सकी");
 
-    let studentId = existingStudent?.id;
+    let studentId = studentLookup.data?.id;
     if (!studentId) {
       const inserted = await supabaseAdmin
         .from("students")
@@ -142,11 +160,12 @@ export const createEntry = createServerFn({ method: "POST" })
         .single();
       if (inserted.error || !inserted.data) throw new Error("रजिस्ट्रेशन नहीं हो सका");
       studentId = inserted.data.id;
-    } else if (existingStudent?.full_name !== data.fullName) {
-      await supabaseAdmin
+    } else if (studentLookup.data?.full_name !== data.fullName) {
+      const updated = await supabaseAdmin
         .from("students")
         .update({ full_name: data.fullName })
         .eq("id", studentId);
+      if (updated.error) throw new Error("छात्र की जानकारी अपडेट नहीं हो सकी");
     }
 
     const settings = await supabaseAdmin
@@ -154,6 +173,7 @@ export const createEntry = createServerFn({ method: "POST" })
       .select("half_day_price, full_day_price")
       .eq("id", true)
       .maybeSingle();
+    if (settings.error) throw new Error("भुगतान राशि लोड नहीं हो सकी");
 
     const price =
       data.entryType === "half_day"
@@ -179,7 +199,14 @@ export const createEntry = createServerFn({ method: "POST" })
       throw new Error("एंट्री सेव नहीं हो सकी");
     }
 
-    await supabaseAdmin.from("payments").insert({ entry_id: entry.data.id, amount: price });
+    const payment = await supabaseAdmin
+      .from("payments")
+      .insert({ entry_id: entry.data.id, amount: price });
+    if (payment.error) {
+      throw new Error(
+        `एंट्री बन गई है, लेकिन भुगतान रिकॉर्ड तैयार नहीं हुआ। सहायता के लिए Entry ID ${entry.data.entry_code} बताएं।`,
+      );
+    }
 
     return {
       entryCode: entry.data.entry_code as string,
@@ -201,7 +228,7 @@ async function loadEntry(entryCode: string, mobile: string) {
   const { data, error } = await supabaseAdmin
     .from("entries")
     .select(
-      "id, entry_code, entry_type, entry_date, entry_time, amount, status, students!inner(full_name, mobile), payments(status, utr, admin_note, created_at)",
+      "id, entry_code, entry_type, entry_date, entry_time, amount, status, students!inner(full_name, mobile)",
     )
     .eq("entry_code", entryCode)
     .maybeSingle();
@@ -210,7 +237,16 @@ async function loadEntry(entryCode: string, mobile: string) {
   if (!data || data.students?.mobile !== mobile) {
     throw new Error("Entry ID और मोबाइल नंबर मेल नहीं खा रहे");
   }
-  return { supabaseAdmin, row: data };
+  const payment = await supabaseAdmin
+    .from("payments")
+    .select("status, utr, admin_note, created_at")
+    .eq("entry_id", data.id)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (payment.error) throw new Error("भुगतान जानकारी लोड नहीं हो सकी");
+  return { supabaseAdmin, row: { ...data, payments: payment.data ? [payment.data] : [] } };
 }
 
 function toSummary(row: {
@@ -221,7 +257,11 @@ function toSummary(row: {
   amount: number | string | null;
   status: "pending" | "confirmed" | "rejected";
   students: { full_name: string; mobile: string } | null;
-  payments: { status: "pending" | "verified" | "rejected"; utr: string | null; admin_note: string | null }[];
+  payments: {
+    status: "pending" | "verified" | "rejected";
+    utr: string | null;
+    admin_note: string | null;
+  }[];
 }): EntrySummary {
   const payment = row.payments?.[0] ?? null;
   return {
@@ -250,6 +290,13 @@ export const submitPayment = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => paymentSchema.parse(input))
   .handler(async ({ data }): Promise<EntrySummary> => {
     const { supabaseAdmin, row } = await loadEntry(data.entryCode, data.mobile);
+    const amount = num(row.amount);
+    if (row.status === "rejected") {
+      throw new Error("यह एंट्री रद्द हो चुकी है; इसके लिए भुगतान जमा नहीं किया जा सकता");
+    }
+    if (amount === null || !Number.isFinite(amount) || amount <= 0) {
+      throw new Error("भुगतान राशि उपलब्ध नहीं है। राशि की पुष्टि के लिए लाइब्रेरी से संपर्क करें");
+    }
 
     const existing = await supabaseAdmin
       .from("payments")
@@ -259,6 +306,7 @@ export const submitPayment = createServerFn({ method: "POST" })
       .limit(1)
       .maybeSingle();
 
+    if (existing.error) throw new Error("मौजूदा भुगतान जानकारी जांची नहीं जा सकी");
     if (existing.data?.status === "verified") {
       throw new Error("इस एंट्री का भुगतान पहले ही verify हो चुका है");
     }
@@ -271,6 +319,7 @@ export const submitPayment = createServerFn({ method: "POST" })
       .select("id")
       .eq("utr", data.utr)
       .maybeSingle();
+    if (duplicate.error) throw new Error("UTR / Transaction ID की जांच नहीं हो सकी");
     if (duplicate.data && duplicate.data.id !== existing.data?.id) {
       throw new Error("यह UTR / Transaction ID पहले उपयोग हो चुका है");
     }
@@ -280,6 +329,7 @@ export const submitPayment = createServerFn({ method: "POST" })
       const ext = data.screenshotType.split("/")[1];
       const bytes = Uint8Array.from(atob(data.screenshotBase64), (c) => c.charCodeAt(0));
       if (bytes.byteLength > 5_000_000) throw new Error("स्क्रीनशॉट 5MB से बड़ा नहीं होना चाहिए");
+      if (bytes.byteLength === 0) throw new Error("स्क्रीनशॉट खाली है");
       const path = `${data.entryCode}/${Date.now()}.${ext}`;
       const upload = await supabaseAdmin.storage
         .from("payment-screenshots")
@@ -292,7 +342,7 @@ export const submitPayment = createServerFn({ method: "POST" })
       utr: data.utr,
       status: "pending" as const,
       admin_note: null,
-      ...(screenshotPath ? { screenshot_path: screenshotPath } : {}),
+      screenshot_path: screenshotPath,
     };
 
     if (existing.data?.id) {
@@ -304,8 +354,13 @@ export const submitPayment = createServerFn({ method: "POST" })
     } else {
       const inserted = await supabaseAdmin
         .from("payments")
-        .insert({ entry_id: row.id, amount: row.amount, ...payload });
-      if (inserted.error) throw new Error("भुगतान जानकारी सेव नहीं हो सकी");
+        .insert({ entry_id: row.id, amount, ...payload });
+      if (inserted.error) {
+        if (inserted.error.code === "23505") {
+          throw new Error("यह UTR / Transaction ID पहले उपयोग हो चुका है");
+        }
+        throw new Error("भुगतान जानकारी सेव नहीं हो सकी");
+      }
     }
 
     const fresh = await loadEntry(data.entryCode, data.mobile);

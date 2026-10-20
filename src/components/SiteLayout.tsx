@@ -7,7 +7,6 @@ const NAV = [
   { to: "/", label: "Home" },
   { to: "/entry", label: "Entry" },
   { to: "/payment", label: "Payment" },
-  { to: "/pass", label: "Entry Pass" },
   { to: "/contact", label: "Contact" },
 ] as const;
 
@@ -117,12 +116,6 @@ export function SiteLayout({ children }: { children: ReactNode }) {
                 {LIBRARY.phone}
               </a>
             </p>
-            <Link
-              to="/admin"
-              className="mt-3 inline-block text-xs text-muted-foreground underline hover:text-primary"
-            >
-              Admin Login
-            </Link>
           </div>
         </div>
       </footer>

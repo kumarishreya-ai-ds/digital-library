@@ -10,13 +10,38 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AdminRouteImport } from './routes/admin'
+import { Route as AdmissionRouteImport } from './routes/admission'
+import { Route as AttendanceRouteImport } from './routes/attendance'
+import { Route as BookRouteImport } from './routes/book'
 import { Route as ContactRouteImport } from './routes/contact'
 import { Route as EntryRouteImport } from './routes/entry'
 import { Route as PaymentRouteImport } from './routes/payment'
+import { Route as StudentRouteImport } from './routes/student'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdmissionRoute = AdmissionRouteImport.update({
+  id: '/admission',
+  path: '/admission',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AttendanceRoute = AttendanceRouteImport.update({
+  id: '/attendance',
+  path: '/attendance',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BookRoute = BookRouteImport.update({
+  id: '/book',
+  path: '/book',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ContactRoute = ContactRouteImport.update({
@@ -34,39 +59,92 @@ const PaymentRoute = PaymentRouteImport.update({
   path: '/payment',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StudentRoute = StudentRouteImport.update({
+  id: '/student',
+  path: '/student',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/admission': typeof AdmissionRoute
+  '/attendance': typeof AttendanceRoute
+  '/book': typeof BookRoute
   '/contact': typeof ContactRoute
   '/entry': typeof EntryRoute
   '/payment': typeof PaymentRoute
+  '/student': typeof StudentRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/admission': typeof AdmissionRoute
+  '/attendance': typeof AttendanceRoute
+  '/book': typeof BookRoute
   '/contact': typeof ContactRoute
   '/entry': typeof EntryRoute
   '/payment': typeof PaymentRoute
+  '/student': typeof StudentRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
+  '/admission': typeof AdmissionRoute
+  '/attendance': typeof AttendanceRoute
+  '/book': typeof BookRoute
   '/contact': typeof ContactRoute
   '/entry': typeof EntryRoute
   '/payment': typeof PaymentRoute
+  '/student': typeof StudentRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/contact' | '/entry' | '/payment'
+  fullPaths:
+    | '/'
+    | '/admin'
+    | '/admission'
+    | '/attendance'
+    | '/book'
+    | '/contact'
+    | '/entry'
+    | '/payment'
+    | '/student'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/contact' | '/entry' | '/payment'
-  id: '__root__' | '/' | '/contact' | '/entry' | '/payment'
+  to:
+    | '/'
+    | '/admin'
+    | '/admission'
+    | '/attendance'
+    | '/book'
+    | '/contact'
+    | '/entry'
+    | '/payment'
+    | '/student'
+  id:
+    | '__root__'
+    | '/'
+    | '/admin'
+    | '/admission'
+    | '/attendance'
+    | '/book'
+    | '/contact'
+    | '/entry'
+    | '/payment'
+    | '/student'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRoute
+  AdmissionRoute: typeof AdmissionRoute
+  AttendanceRoute: typeof AttendanceRoute
+  BookRoute: typeof BookRoute
   ContactRoute: typeof ContactRoute
   EntryRoute: typeof EntryRoute
   PaymentRoute: typeof PaymentRoute
+  StudentRoute: typeof StudentRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -76,6 +154,34 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admission': {
+      id: '/admission'
+      path: '/admission'
+      fullPath: '/admission'
+      preLoaderRoute: typeof AdmissionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/attendance': {
+      id: '/attendance'
+      path: '/attendance'
+      fullPath: '/attendance'
+      preLoaderRoute: typeof AttendanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/book': {
+      id: '/book'
+      path: '/book'
+      fullPath: '/book'
+      preLoaderRoute: typeof BookRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/contact': {
@@ -99,14 +205,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PaymentRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/student': {
+      id: '/student'
+      path: '/student'
+      fullPath: '/student'
+      preLoaderRoute: typeof StudentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRoute,
+  AdmissionRoute: AdmissionRoute,
+  AttendanceRoute: AttendanceRoute,
+  BookRoute: BookRoute,
   ContactRoute: ContactRoute,
   EntryRoute: EntryRoute,
   PaymentRoute: PaymentRoute,
+  StudentRoute: StudentRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

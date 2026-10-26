@@ -79,16 +79,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "श्री गणेश लाइब्रेरी | Shri Ganesh Library" },
+      { title: "Shree Ganesh Digital Library | श्री गणेश डिजिटल लाइब्रेरी" },
       {
         name: "description",
         content:
-          "श्री गणेश लाइब्रेरी – शांत, सुरक्षित और सुविधाजनक अध्ययन वातावरण। ऑनलाइन एंट्री और UPI भुगतान।",
+          "Shree Ganesh Digital Library, Khudra, Pachlakhi, Siwan, Bihar – शांत, सुरक्षित और आधुनिक अध्ययन वातावरण। 20 फिजिकल सीटें, ऑनलाइन एडमिशन एवं UPI भुगतान।",
       },
-      { property: "og:title", content: "श्री गणेश लाइब्रेरी | Shri Ganesh Library" },
+      { property: "og:title", content: "Shree Ganesh Digital Library | श्री गणेश डिजिटल लाइब्रेरी" },
       {
         property: "og:description",
-        content: "नया रूप, नई सुविधाएं – AC/Cooler, CCTV, Free Wi-Fi, शांत अध्ययन वातावरण।",
+        content: "नया रूप, नई सुविधाएं – 20 फिजिकल सीटें, AC/Cooler, CCTV, Free Wi-Fi, शांत अध्ययन वातावरण।",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },

@@ -163,20 +163,269 @@ export type Database = {
         Row: {
           created_at: string
           full_name: string
+          parent_name: string | null
           id: string
           mobile: string
+          student_id_code: string | null
+          email: string | null
+          address: string | null
+          exam_goal: string | null
+          photo_path: string | null
+          signature_path: string | null
+          id_proof_path: string | null
+          admission_status: "pending" | "approved" | "rejected"
+          selected_plan: "morning_half" | "second_half" | "full_time" | null
+          assigned_seat_id: string | null
+          rejection_reason: string | null
+          updated_at: string
         }
         Insert: {
           created_at?: string
           full_name: string
+          parent_name?: string | null
           id?: string
           mobile: string
+          student_id_code?: string | null
+          email?: string | null
+          address?: string | null
+          exam_goal?: string | null
+          photo_path?: string | null
+          signature_path?: string | null
+          id_proof_path?: string | null
+          admission_status?: "pending" | "approved" | "rejected"
+          selected_plan?: "morning_half" | "second_half" | "full_time" | null
+          assigned_seat_id?: string | null
+          rejection_reason?: string | null
+          updated_at?: string
         }
         Update: {
           created_at?: string
           full_name?: string
+          parent_name?: string | null
           id?: string
           mobile?: string
+          student_id_code?: string | null
+          email?: string | null
+          address?: string | null
+          exam_goal?: string | null
+          photo_path?: string | null
+          signature_path?: string | null
+          id_proof_path?: string | null
+          admission_status?: "pending" | "approved" | "rejected"
+          selected_plan?: "morning_half" | "second_half" | "full_time" | null
+          assigned_seat_id?: string | null
+          rejection_reason?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      seats: {
+        Row: {
+          id: string
+          seat_number: string
+          label: string
+          is_active: boolean
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          seat_number: string
+          label: string
+          is_active?: boolean
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          seat_number?: string
+          label?: string
+          is_active?: boolean
+          created_at?: string
+        }
+        Relationships: []
+      }
+      seat_bookings: {
+        Row: {
+          id: string
+          seat_id: string
+          student_id: string | null
+          booking_date: string
+          slot: "morning_half" | "second_half" | "full_time"
+          status: string
+          reserved_until: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          seat_id: string
+          student_id?: string | null
+          booking_date: string
+          slot: "morning_half" | "second_half" | "full_time"
+          status?: string
+          reserved_until?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          seat_id?: string
+          student_id?: string | null
+          booking_date?: string
+          slot?: "morning_half" | "second_half" | "full_time"
+          status?: string
+          reserved_until?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      memberships: {
+        Row: {
+          id: string
+          student_id: string
+          seat_id: string | null
+          plan_type: "morning_half" | "second_half" | "full_time"
+          start_date: string
+          expiry_date: string
+          status: "active" | "expired" | "pending" | "cancelled"
+          monthly_fee: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          student_id: string
+          seat_id?: string | null
+          plan_type: "morning_half" | "second_half" | "full_time"
+          start_date: string
+          expiry_date: string
+          status?: "active" | "expired" | "pending" | "cancelled"
+          monthly_fee: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          student_id?: string
+          seat_id?: string | null
+          plan_type?: "morning_half" | "second_half" | "full_time"
+          start_date?: string
+          expiry_date?: string
+          status?: "active" | "expired" | "pending" | "cancelled"
+          monthly_fee?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      attendance: {
+        Row: {
+          id: string
+          student_id: string
+          attendance_date: string
+          check_in_at: string
+          check_out_at: string | null
+          status: "present" | "incomplete" | "absent"
+          is_manual_correction: boolean
+          correction_reason: string | null
+          corrected_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          student_id: string
+          attendance_date?: string
+          check_in_at?: string
+          check_out_at?: string | null
+          status?: "present" | "incomplete" | "absent"
+          is_manual_correction?: boolean
+          correction_reason?: string | null
+          corrected_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          student_id?: string
+          attendance_date?: string
+          check_in_at?: string
+          check_out_at?: string | null
+          status?: "present" | "incomplete" | "absent"
+          is_manual_correction?: boolean
+          correction_reason?: string | null
+          corrected_by?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      renewal_requests: {
+        Row: {
+          id: string
+          student_id: string
+          membership_id: string
+          requested_plan: "morning_half" | "second_half" | "full_time"
+          status: string
+          utr: string | null
+          screenshot_path: string | null
+          admin_note: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          student_id: string
+          membership_id: string
+          requested_plan: "morning_half" | "second_half" | "full_time"
+          status?: string
+          utr?: string | null
+          screenshot_path?: string | null
+          admin_note?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          student_id?: string
+          membership_id?: string
+          requested_plan?: "morning_half" | "second_half" | "full_time"
+          status?: string
+          utr?: string | null
+          screenshot_path?: string | null
+          admin_note?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      admin_audit_logs: {
+        Row: {
+          id: string
+          admin_id: string | null
+          admin_email: string | null
+          action: string
+          entity_type: string
+          entity_id: string | null
+          details: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          admin_id?: string | null
+          admin_email?: string | null
+          action: string
+          entity_type: string
+          entity_id?: string | null
+          details?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          admin_id?: string | null
+          admin_email?: string | null
+          action?: string
+          entity_type?: string
+          entity_id?: string | null
+          details?: Json | null
+          created_at?: string
         }
         Relationships: []
       }
@@ -197,7 +446,7 @@ export type Database = {
           created_at?: string
           id?: string
           role?: Database["public"]["Enums"]["app_role"]
-          user_id?: string
+          user_id: string
         }
         Relationships: []
       }

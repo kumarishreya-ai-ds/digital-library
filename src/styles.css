@@ -130,3 +130,16 @@
   );
   height: 3px;
 }
+
+@media print {
+  header, footer, nav, button:not(.print-include), .no-print {
+    display: none !important;
+  }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+}

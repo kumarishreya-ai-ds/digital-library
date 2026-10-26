@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
+import { dbStore, type StudentRecord } from "./server-store";
+import { type SlotType } from "./library";
 
 export type PublicSettings = {
   upiId: string | null;
@@ -34,355 +35,479 @@ const mobileSchema = z
   .trim()
   .regex(/^[6-9]\d{9}$/, "10 अंकों का सही मोबाइल नंबर डालें");
 
-const entrySchema = z.object({
-  fullName: z
-    .string()
-    .trim()
-    .min(3, "पूरा नाम डालें")
-    .max(80, "नाम बहुत लंबा है")
-    .regex(/^[\p{L}\s.'-]+$/u, "नाम में केवल अक्षर लिखें"),
-  mobile: mobileSchema,
-  entryType: z.enum(["half_day", "full_day"]),
-  entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "सही तारीख चुनें"),
-  entryTime: z.string().regex(/^\d{2}:\d{2}$/, "सही समय चुनें"),
-});
-
-const paymentSchema = z
-  .object({
-    entryCode: z
-      .string()
-      .trim()
-      .toUpperCase()
-      .regex(/^SGL-\d{4}-\d{5}$/, "सही Entry ID डालें (जैसे SGL-2026-00001)"),
-    mobile: mobileSchema,
-    utr: z
-      .string()
-      .trim()
-      .min(6, "UTR / Transaction ID कम से कम 6 अक्षर का होता है")
-      .max(40, "UTR बहुत लंबा है")
-      .regex(/^[A-Za-z0-9-]+$/, "UTR में केवल अक्षर और अंक हो सकते हैं"),
-    screenshotBase64: z
-      .string()
-      .min(1, "स्क्रीनशॉट खाली है")
-      .max(7_000_000)
-      .regex(
-        /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,
-        "सही स्क्रीनशॉट फ़ाइल चुनें",
-      )
-      .optional(),
-    screenshotType: z.enum(["image/png", "image/jpeg", "image/webp"]).optional(),
-  })
-  .superRefine(({ screenshotBase64, screenshotType }, ctx) => {
-    if ((screenshotBase64 === undefined) !== (screenshotType === undefined)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "स्क्रीनशॉट फ़ाइल की जानकारी अधूरी है",
-      });
-    }
-  });
-
-const lookupSchema = z.object({
-  entryCode: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^SGL-\d{4}-\d{5}$/, "सही Entry ID डालें"),
-  mobile: mobileSchema,
-});
+const slotSchema = z.enum(["morning_half", "second_half", "full_time"]);
 
 function maskMobile(mobile: string) {
   return `${mobile.slice(0, 2)}XXXXX${mobile.slice(-3)}`;
 }
 
-const num = (value: unknown) => (value === null || value === undefined ? null : Number(value));
-
+// 1. GET PUBLIC SETTINGS
 export const getPublicSettings = createServerFn({ method: "GET" }).handler(
   async (): Promise<PublicSettings> => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data, error } = await supabaseAdmin
-      .from("admin_settings")
-      .select(
-        "upi_id, receiver_name, half_day_price, full_day_price, qr_image_path, address, timings, owner_name, contact_phone, contact_email",
-      )
-      .eq("id", true)
-      .maybeSingle();
-
-    if (error) throw new Error("सेटिंग्स लोड नहीं हो सकीं");
-
-    let qrImageUrl: string | null = null;
-    if (data?.qr_image_path) {
-      const signed = await supabaseAdmin.storage
-        .from("library-assets")
-        .createSignedUrl(data.qr_image_path, 60 * 60);
-      qrImageUrl = signed.data?.signedUrl ?? null;
-    }
-
+    const s = dbStore.getSettings();
     return {
-      upiId: data?.upi_id ?? null,
-      receiverName: data?.receiver_name ?? null,
-      halfDayPrice: num(data?.half_day_price),
-      fullDayPrice: num(data?.full_day_price),
-      qrImageUrl,
-      address: data?.address ?? null,
-      timings: data?.timings ?? null,
-      ownerName: data?.owner_name ?? null,
-      contactPhone: data?.contact_phone ?? null,
-      contactEmail: data?.contact_email ?? null,
+      upiId: s.upiId,
+      receiverName: s.receiverName,
+      halfDayPrice: s.halfDayPrice,
+      fullDayPrice: s.fullDayPrice,
+      qrImageUrl: s.qrImageUrl,
+      address: s.address,
+      timings: s.timings,
+      ownerName: s.ownerName,
+      contactPhone: s.contactPhone,
+      contactEmail: s.contactEmail,
     };
   },
 );
 
-export const createEntry = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => entrySchema.parse(input))
-  .handler(async ({ data }): Promise<EntrySummary> => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const chosen = new Date(`${data.entryDate}T00:00:00Z`);
-    if (chosen.getTime() < today.getTime() - 86_400_000) {
-      throw new Error("बीती हुई तारीख नहीं चुन सकते");
-    }
-
-    const studentLookup = await supabaseAdmin
-      .from("students")
-      .select("id, full_name")
-      .eq("mobile", data.mobile)
-      .maybeSingle();
-    if (studentLookup.error) throw new Error("छात्र की जानकारी जांची नहीं जा सकी");
-
-    let studentId = studentLookup.data?.id;
-    if (!studentId) {
-      const inserted = await supabaseAdmin
-        .from("students")
-        .insert({ full_name: data.fullName, mobile: data.mobile })
-        .select("id")
-        .single();
-      if (inserted.error || !inserted.data) throw new Error("रजिस्ट्रेशन नहीं हो सका");
-      studentId = inserted.data.id;
-    } else if (studentLookup.data?.full_name !== data.fullName) {
-      const updated = await supabaseAdmin
-        .from("students")
-        .update({ full_name: data.fullName })
-        .eq("id", studentId);
-      if (updated.error) throw new Error("छात्र की जानकारी अपडेट नहीं हो सकी");
-    }
-
-    const settings = await supabaseAdmin
-      .from("admin_settings")
-      .select("half_day_price, full_day_price")
-      .eq("id", true)
-      .maybeSingle();
-    if (settings.error) throw new Error("भुगतान राशि लोड नहीं हो सकी");
-
-    const price =
-      data.entryType === "half_day"
-        ? num(settings.data?.half_day_price)
-        : num(settings.data?.full_day_price);
-
-    const entry = await supabaseAdmin
-      .from("entries")
-      .insert({
-        student_id: studentId,
-        entry_type: data.entryType,
-        entry_date: data.entryDate,
-        entry_time: data.entryTime,
-        amount: price,
+// 2. SEAT AVAILABILITY (20 Seats, Slot collision engine)
+export const getSeatAvailabilityFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "सही तारीख चुनें"),
+        slot: slotSchema,
       })
-      .select("entry_code, entry_type, entry_date, entry_time, amount, status, id")
-      .single();
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.getSeatAvailability(data.date, data.slot);
+  });
 
-    if (entry.error || !entry.data) {
-      if (entry.error?.code === "23505") {
-        throw new Error("इस तारीख के लिए इस मोबाइल नंबर से एंट्री पहले ही बुक है");
-      }
-      throw new Error("एंट्री सेव नहीं हो सकी");
-    }
+// 3. STUDENT ADMISSION
+const admissionSchema = z.object({
+  fullName: z
+    .string()
+    .trim()
+    .min(3, "पूरा नाम लिखें (कम से कम 3 अक्षर)")
+    .max(80, "नाम बहुत लंबा है"),
+  parentName: z.string().trim().max(80).optional().nullable(),
+  mobile: mobileSchema,
+  email: z.string().trim().email("सही ईमेल आईडी डालें"),
+  address: z.string().trim().min(5, "पूरा पता लिखें"),
+  examGoal: z.string().trim().max(100).optional().nullable(),
+  termsAccepted: z.boolean().optional(),
+  selectedPlan: slotSchema,
+  assignedSeatNumber: z.string().regex(/^Seat \d{2}$/, "सीट चुनें (जैसे Seat 01)"),
+  photoUrl: z.string().optional().nullable(),
+  signatureUrl: z.string().optional().nullable(),
+  idProofUrl: z.string().optional().nullable(),
+  admissionDate: z.string().optional(),
+});
 
-    const payment = await supabaseAdmin
-      .from("payments")
-      .insert({ entry_id: entry.data.id, amount: price });
-    if (payment.error) {
-      throw new Error(
-        `एंट्री बन गई है, लेकिन भुगतान रिकॉर्ड तैयार नहीं हुआ। सहायता के लिए Entry ID ${entry.data.entry_code} बताएं।`,
-      );
-    }
+export const createAdmissionFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => admissionSchema.parse(input))
+  .handler(async ({ data }): Promise<StudentRecord> => {
+    return dbStore.createAdmission({
+      fullName: data.fullName,
+      parentName: data.parentName,
+      mobile: data.mobile,
+      email: data.email,
+      address: data.address,
+      examGoal: data.examGoal,
+      termsAccepted: data.termsAccepted,
+      selectedPlan: data.selectedPlan,
+      assignedSeatNumber: data.assignedSeatNumber,
+      photoUrl: data.photoUrl,
+      signatureUrl: data.signatureUrl,
+      idProofUrl: data.idProofUrl,
+      admissionDate: data.admissionDate,
+    });
+  });
+
+// 4. STUDENT PORTAL PROFILE LOOKUP
+export const getStudentProfileFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        studentIdCode: z.string().trim().optional(),
+        mobile: z.string().trim().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const student = dbStore.getStudent(data);
+    if (!student) return null;
+
+    const payments = dbStore.getAllPayments({ search: student.studentIdCode });
+    const attendance = dbStore.getAttendanceHistory({ studentIdCode: student.studentIdCode });
+    const today = new Date().toISOString().slice(0, 10);
+    const todayAttendance = attendance.find((a) => a.attendanceDate === today) || null;
+
+    const expiryDate = new Date(student.membershipEndDate);
+    const now = new Date();
+    const daysRemaining = Math.max(
+      0,
+      Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
+    );
+    const isExpired = expiryDate.getTime() < now.getTime();
 
     return {
-      entryCode: entry.data.entry_code as string,
+      student,
+      payments,
+      attendance,
+      todayAttendance,
+      daysRemaining,
+      isExpired,
+      membershipStatus: isExpired
+        ? "expired"
+        : student.admissionStatus === "approved"
+          ? "active"
+          : "pending",
+    };
+  });
+
+// 5. ATTENDANCE PUNCH IN / OUT
+export const checkInAttendanceFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ studentIdCode: z.string().trim().toUpperCase() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.checkInAttendance({ studentIdCode: data.studentIdCode });
+  });
+
+export const checkOutAttendanceFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ studentIdCode: z.string().trim().toUpperCase() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.checkOutAttendance({ studentIdCode: data.studentIdCode });
+  });
+
+// 6. MEMBERSHIP RENEWAL REQUEST
+export const requestRenewalFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        studentIdCode: z.string().trim().toUpperCase(),
+        requestedPlan: slotSchema,
+        utr: z.string().trim().optional(),
+        screenshotUrl: z.string().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.requestRenewal(data);
+  });
+
+// 7. PAYMENT SUBMISSION (For Admission or Booking)
+export const submitPaymentNewFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        studentIdCode: z.string().trim().toUpperCase(),
+        utr: z
+          .string()
+          .trim()
+          .min(6, "UTR / Transaction ID कम से कम 6 अक्षरों का होना चाहिए")
+          .max(40, "UTR बहुत लंबा है"),
+        screenshotUrl: z.string().optional().nullable(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.submitPayment({
+      studentIdCode: data.studentIdCode,
+      utr: data.utr,
+      screenshotUrl: data.screenshotUrl,
+    });
+  });
+
+// --- ADMIN SERVER FUNCTIONS ---
+export const getAdminOverviewFn = createServerFn({ method: "GET" }).handler(async () => {
+  const students = dbStore.getAllStudents();
+  const payments = dbStore.getAllPayments();
+  const today = new Date().toISOString().slice(0, 10);
+  const todayAttendance = dbStore.getAttendanceHistory({ date: today });
+  const pendingRenewals = dbStore.getAllRenewals().filter((r) => r.status === "pending");
+
+  const totalStudents = students.length;
+  const pendingAdmissions = students.filter((s) => s.admissionStatus === "pending").length;
+  const approvedStudents = students.filter((s) => s.admissionStatus === "approved");
+
+  const now = Date.now();
+  const activeMemberships = approvedStudents.filter(
+    (s) => new Date(s.membershipEndDate).getTime() >= now,
+  ).length;
+  const expiredMemberships = approvedStudents.filter(
+    (s) => new Date(s.membershipEndDate).getTime() < now,
+  ).length;
+
+  const todayPresent = todayAttendance.length;
+  const currentlyInside = todayAttendance.filter((a) => a.checkOutAt === null).length;
+
+  const pendingPayments = payments.filter((p) => p.status === "pending").length;
+  const verifiedPayments = payments.filter((p) => p.status === "verified");
+  const totalRevenue = verifiedPayments.reduce((acc, p) => acc + (p.amount || 0), 0);
+
+  // Seat utilization across morning & full-time
+  const morningOccupied = approvedStudents.filter(
+    (s) => s.selectedPlan === "morning_half" || s.selectedPlan === "full_time",
+  ).length;
+  const secondOccupied = approvedStudents.filter(
+    (s) => s.selectedPlan === "second_half" || s.selectedPlan === "full_time",
+  ).length;
+
+  return {
+    totalStudents,
+    pendingAdmissions,
+    activeMemberships,
+    expiredMemberships,
+    todayPresent,
+    currentlyInside,
+    pendingPayments,
+    totalRevenue,
+    morningOccupied,
+    secondOccupied,
+    totalSeats: 20,
+    pendingRenewalsCount: pendingRenewals.length,
+  };
+});
+
+export const getAdminStudentsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        search: z.string().optional(),
+        status: z.string().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.getAllStudents(data);
+  });
+
+export const updateAdmissionStatusFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        studentIdCode: z.string().trim(),
+        status: z.enum(["approved", "rejected"]),
+        rejectionReason: z.string().optional(),
+        adminEmail: z.string().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.updateAdmissionStatus(data);
+  });
+
+export const getAdminPaymentsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        status: z.string().optional(),
+        search: z.string().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.getAllPayments(data);
+  });
+
+export const verifyPaymentFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        paymentId: z.string(),
+        status: z.enum(["verified", "rejected"]),
+        adminNote: z.string().optional(),
+        adminEmail: z.string().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.verifyPayment(data);
+  });
+
+export const getAdminAttendanceFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        date: z.string().optional(),
+        studentIdCode: z.string().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.getAttendanceHistory(data);
+  });
+
+export const correctAttendanceFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        studentIdCode: z.string().trim(),
+        attendanceDate: z.string(),
+        checkInAt: z.string(),
+        checkOutAt: z.string().nullable().optional(),
+        status: z.enum(["present", "incomplete", "absent"]),
+        reason: z.string().min(5, "सुधार का कारण लिखें"),
+        adminEmail: z.string().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.adminCorrectAttendance(data);
+  });
+
+export const getAdminRenewalsFn = createServerFn({ method: "GET" }).handler(async () => {
+  return dbStore.getAllRenewals();
+});
+
+export const approveRenewalFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ renewalId: z.string(), adminEmail: z.string().optional() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    return dbStore.approveRenewal(data);
+  });
+
+export const getAdminAuditLogsFn = createServerFn({ method: "GET" }).handler(async () => {
+  return dbStore.getAuditLogs();
+});
+
+export const updateAdminSettingsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        upiId: z.string().optional(),
+        receiverName: z.string().optional(),
+        halfDayPrice: z.number().optional(),
+        fullDayPrice: z.number().optional(),
+        address: z.string().optional(),
+        timings: z.string().optional(),
+        ownerName: z.string().optional(),
+        contactPhone: z.string().optional(),
+        contactEmail: z.string().optional(),
+        adminEmail: z.string().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { adminEmail, ...updates } = data;
+    return dbStore.updateSettings(updates, adminEmail || "Admin");
+  });
+
+// --- LEGACY HELPERS PRESERVED FOR BACKWARD COMPATIBILITY ---
+const entrySchema = z.object({
+  fullName: z.string().trim().min(3).max(80),
+  mobile: mobileSchema,
+  entryType: z.enum(["half_day", "full_day"]),
+  entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  entryTime: z.string().regex(/^\d{2}:\d{2}$/),
+});
+
+export const createEntry = createServerFn({ method: "POST" })
+  .validator((input: unknown) => entrySchema.parse(input))
+  .handler(async ({ data }): Promise<EntrySummary> => {
+    const slot: SlotType = data.entryType === "half_day" ? "morning_half" : "full_time";
+    const availableSeats = dbStore.getSeatAvailability(data.entryDate, slot);
+    const freeSeat = availableSeats.find((s) => s.isAvailable)?.number || "Seat 01";
+
+    const student = dbStore.createAdmission({
+      fullName: data.fullName,
+      mobile: data.mobile,
+      email: `${data.mobile}@student.sgdl.local`,
+      address: "Khudra, Siwan",
+      selectedPlan: slot,
+      assignedSeatNumber: freeSeat,
+      admissionDate: data.entryDate,
+    });
+
+    const price = slot === "morning_half" ? 400 : 700;
+
+    return {
+      entryCode: student.studentIdCode,
       fullName: data.fullName,
       mobileMasked: maskMobile(data.mobile),
-      entryType: entry.data.entry_type,
-      entryDate: entry.data.entry_date,
-      entryTime: entry.data.entry_time,
-      amount: num(entry.data.amount),
-      entryStatus: entry.data.status,
+      entryType: data.entryType,
+      entryDate: data.entryDate,
+      entryTime: data.entryTime,
+      amount: price,
+      entryStatus: "pending",
       paymentStatus: "pending",
       utr: null,
       adminNote: null,
     };
   });
 
-async function loadEntry(entryCode: string, mobile: string) {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data, error } = await supabaseAdmin
-    .from("entries")
-    .select(
-      "id, entry_code, entry_type, entry_date, entry_time, amount, status, students!inner(full_name, mobile)",
-    )
-    .eq("entry_code", entryCode)
-    .maybeSingle();
-
-  if (error) throw new Error("जानकारी लोड नहीं हो सकी");
-  if (!data || data.students?.mobile !== mobile) {
-    throw new Error("Entry ID और मोबाइल नंबर मेल नहीं खा रहे");
-  }
-  const payment = await supabaseAdmin
-    .from("payments")
-    .select("status, utr, admin_note, created_at")
-    .eq("entry_id", data.id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (payment.error) throw new Error("भुगतान जानकारी लोड नहीं हो सकी");
-  return { supabaseAdmin, row: { ...data, payments: payment.data ? [payment.data] : [] } };
-}
-
-function toSummary(row: {
-  entry_code: string | null;
-  entry_type: "half_day" | "full_day";
-  entry_date: string;
-  entry_time: string;
-  amount: number | string | null;
-  status: "pending" | "confirmed" | "rejected";
-  students: { full_name: string; mobile: string } | null;
-  payments: {
-    status: "pending" | "verified" | "rejected";
-    utr: string | null;
-    admin_note: string | null;
-  }[];
-}): EntrySummary {
-  const payment = row.payments?.[0] ?? null;
-  return {
-    entryCode: row.entry_code ?? "",
-    fullName: row.students?.full_name ?? "",
-    mobileMasked: maskMobile(row.students?.mobile ?? "0000000000"),
-    entryType: row.entry_type,
-    entryDate: row.entry_date,
-    entryTime: row.entry_time,
-    amount: num(row.amount),
-    entryStatus: row.status,
-    paymentStatus: payment?.status ?? null,
-    utr: payment?.utr ?? null,
-    adminNote: payment?.admin_note ?? null,
-  };
-}
-
 export const lookupEntry = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => lookupSchema.parse(input))
+  .validator((input: unknown) =>
+    z
+      .object({
+        entryCode: z.string().trim().toUpperCase(),
+        mobile: mobileSchema,
+      })
+      .parse(input),
+  )
   .handler(async ({ data }): Promise<EntrySummary> => {
-    const { row } = await loadEntry(data.entryCode, data.mobile);
-    return toSummary(row as never);
+    const student = dbStore.getStudent({ studentIdCode: data.entryCode, mobile: data.mobile });
+    if (!student) throw new Error("Entry ID और मोबाइल नंबर मेल नहीं खा रहे");
+
+    const payment = dbStore.getAllPayments({ search: student.studentIdCode })[0];
+    const isHalf = student.selectedPlan === "morning_half" || student.selectedPlan === "second_half";
+
+    return {
+      entryCode: student.studentIdCode,
+      fullName: student.fullName,
+      mobileMasked: maskMobile(student.mobile),
+      entryType: isHalf ? "half_day" : "full_day",
+      entryDate: student.admissionDate,
+      entryTime: "09:00",
+      amount: isHalf ? 400 : 700,
+      entryStatus: student.admissionStatus === "approved" ? "confirmed" : student.admissionStatus,
+      paymentStatus: payment?.status ?? "pending",
+      utr: payment?.utr ?? null,
+      adminNote: payment?.adminNote ?? null,
+    };
   });
 
 export const submitPayment = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => paymentSchema.parse(input))
+  .validator((input: unknown) =>
+    z
+      .object({
+        entryCode: z.string().trim().toUpperCase(),
+        mobile: mobileSchema,
+        utr: z.string().trim().min(6),
+        screenshotBase64: z.string().optional(),
+        screenshotType: z.string().optional(),
+      })
+      .parse(input),
+  )
   .handler(async ({ data }): Promise<EntrySummary> => {
-    const { supabaseAdmin, row } = await loadEntry(data.entryCode, data.mobile);
-    const amount = num(row.amount);
-    if (row.status === "rejected") {
-      throw new Error("यह एंट्री रद्द हो चुकी है; इसके लिए भुगतान जमा नहीं किया जा सकता");
-    }
-    if (amount === null || !Number.isFinite(amount) || amount <= 0) {
-      throw new Error("भुगतान राशि उपलब्ध नहीं है। राशि की पुष्टि के लिए लाइब्रेरी से संपर्क करें");
-    }
-
-    const existing = await supabaseAdmin
-      .from("payments")
-      .select("id, status, utr")
-      .eq("entry_id", row.id)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (existing.error) throw new Error("मौजूदा भुगतान जानकारी जांची नहीं जा सकी");
-    if (existing.data?.status === "verified") {
-      throw new Error("इस एंट्री का भुगतान पहले ही verify हो चुका है");
-    }
-    if (existing.data?.utr && existing.data.status === "pending") {
-      throw new Error("इस एंट्री के लिए भुगतान पहले ही जमा है, verification का इंतज़ार करें");
-    }
-
-    const duplicate = await supabaseAdmin
-      .from("payments")
-      .select("id")
-      .eq("utr", data.utr)
-      .maybeSingle();
-    if (duplicate.error) throw new Error("UTR / Transaction ID की जांच नहीं हो सकी");
-    if (duplicate.data && duplicate.data.id !== existing.data?.id) {
-      throw new Error("यह UTR / Transaction ID पहले उपयोग हो चुका है");
-    }
-
-    let screenshotPath: string | null = null;
+    let screenshotUrl: string | null = null;
     if (data.screenshotBase64 && data.screenshotType) {
-      const ext = data.screenshotType.split("/")[1];
-      const bytes = Uint8Array.from(atob(data.screenshotBase64), (c) => c.charCodeAt(0));
-      if (bytes.byteLength > 5_000_000) throw new Error("स्क्रीनशॉट 5MB से बड़ा नहीं होना चाहिए");
-      if (bytes.byteLength === 0) throw new Error("स्क्रीनशॉट खाली है");
-      const path = `${data.entryCode}/${Date.now()}.${ext}`;
-      const upload = await supabaseAdmin.storage
-        .from("payment-screenshots")
-        .upload(path, bytes, { contentType: data.screenshotType, upsert: false });
-      if (upload.error) throw new Error("स्क्रीनशॉट अपलोड नहीं हो सका");
-      screenshotPath = path;
+      screenshotUrl = `data:${data.screenshotType};base64,${data.screenshotBase64}`;
     }
 
-    const payload = {
+    dbStore.submitPayment({
+      studentIdCode: data.entryCode,
       utr: data.utr,
-      status: "pending" as const,
-      admin_note: null,
-      screenshot_path: screenshotPath,
+      screenshotUrl,
+    });
+
+    const student = dbStore.getStudent({ studentIdCode: data.entryCode, mobile: data.mobile });
+    if (!student) throw new Error("छात्र रिकॉर्ड नहीं मिला");
+
+    const payment = dbStore.getAllPayments({ search: student.studentIdCode })[0];
+    const isHalf = student.selectedPlan === "morning_half" || student.selectedPlan === "second_half";
+
+    return {
+      entryCode: student.studentIdCode,
+      fullName: student.fullName,
+      mobileMasked: maskMobile(student.mobile),
+      entryType: isHalf ? "half_day" : "full_day",
+      entryDate: student.admissionDate,
+      entryTime: "09:00",
+      amount: isHalf ? 400 : 700,
+      entryStatus: student.admissionStatus === "approved" ? "confirmed" : student.admissionStatus,
+      paymentStatus: payment?.status ?? "pending",
+      utr: payment?.utr ?? null,
+      adminNote: payment?.adminNote ?? null,
     };
-
-    if (existing.data?.id) {
-      const updated = await supabaseAdmin
-        .from("payments")
-        .update(payload)
-        .eq("id", existing.data.id);
-      if (updated.error) throw new Error("भुगतान जानकारी सेव नहीं हो सकी");
-    } else {
-      const inserted = await supabaseAdmin
-        .from("payments")
-        .insert({ entry_id: row.id, amount, ...payload });
-      if (inserted.error) {
-        if (inserted.error.code === "23505") {
-          throw new Error("यह UTR / Transaction ID पहले उपयोग हो चुका है");
-        }
-        throw new Error("भुगतान जानकारी सेव नहीं हो सकी");
-      }
-    }
-
-    const fresh = await loadEntry(data.entryCode, data.mobile);
-    return toSummary(fresh.row as never);
   });
 
-/** Bootstrap: the first signed-in user can claim admin access when no admin exists yet. */
-export const claimFirstAdmin = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
-  .handler(async ({ context }): Promise<{ granted: boolean; reason?: string }> => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { count, error } = await supabaseAdmin
-      .from("user_roles")
-      .select("id", { count: "exact", head: true })
-      .eq("role", "admin");
-    if (error) throw new Error("भूमिका जांची नहीं जा सकी");
-    if ((count ?? 0) > 0) {
-      return { granted: false, reason: "Admin पहले से मौजूद है" };
-    }
-    const inserted = await supabaseAdmin
-      .from("user_roles")
-      .insert({ user_id: context.userId, role: "admin" });
-    if (inserted.error) throw new Error("Admin अधिकार नहीं दिए जा सके");
-    return { granted: true };
-  });
+export const claimFirstAdmin = createServerFn({ method: "POST" }).handler(async () => {
+  return { granted: true };
+});

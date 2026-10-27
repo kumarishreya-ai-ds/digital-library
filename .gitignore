@@ -20,6 +20,10 @@ dist-ssr
 .wrangler/
 .dev.vars
 
+# Persistent local database
+data/
+.output/sgdl_data.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,6 +1,28 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { LIBRARY, MEMBERSHIP_PLANS, PHYSICAL_SEATS, type SlotType } from "./library.ts";
+
+export interface AdminUserRecord {
+  id: string;
+  email: string;
+  fullName: string;
+  role: "superadmin" | "admin";
+  passwordHash: string;
+  salt: string;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+export interface AdminSessionRecord {
+  token: string;
+  adminId: string;
+  adminEmail: string;
+  adminRole: "superadmin" | "admin";
+  fullName: string;
+  createdAt: string;
+  expiresAt: string;
+}
 
 export interface StudentRecord {
   id: string;
@@ -12,6 +34,10 @@ export interface StudentRecord {
   address: string;
   examGoal?: string | null; // Preparation Goal (BPSC, UPSC, SSC, etc.)
   termsAccepted?: boolean;
+  membershipStatus?: "active" | "expired" | "pending" | "suspended" | "cancelled";
+  isDeactivated?: boolean;
+  deactivatedAt?: string | null;
+  deactivationReason?: string | null;
   photoUrl: string | null;
   signatureUrl: string | null;
   idProofUrl: string | null;
@@ -116,6 +142,8 @@ export interface AdminSettingsRecord {
 }
 
 interface DatabaseState {
+  adminUsers: AdminUserRecord[];
+  adminSessions: AdminSessionRecord[];
   students: StudentRecord[];
   bookings: BookingRecord[];
   payments: PaymentRecord[];
@@ -127,11 +155,25 @@ interface DatabaseState {
   nextBookingSeq: number;
 }
 
-const DATA_FILE = path.resolve(process.cwd(), ".output", "sgdl_data.json");
-const DATA_DIR = path.dirname(DATA_FILE);
+const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_FILE = path.resolve(DATA_DIR, "sgdl_data.json");
+
+function hashPassword(password: string, salt: string): string {
+  return crypto.pbkdf2Sync(password, salt, 10000, 64, "sha512").toString("hex");
+}
+
+function generateSalt(): string {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+function generateToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
 
 function defaultState(): DatabaseState {
   return {
+    adminUsers: [],
+    adminSessions: [],
     students: [
       {
         id: "stu-demo-01",
@@ -305,6 +347,19 @@ function loadState(): DatabaseState {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, "utf-8");
       memoryState = JSON.parse(raw);
+      if (!memoryState!.adminUsers) memoryState!.adminUsers = [];
+      if (!memoryState!.adminSessions) memoryState!.adminSessions = [];
+      return memoryState!;
+    }
+
+    // Fallback: check legacy .output path and migrate if found
+    const legacyFile = path.resolve(process.cwd(), ".output", "sgdl_data.json");
+    if (fs.existsSync(legacyFile)) {
+      const raw = fs.readFileSync(legacyFile, "utf-8");
+      memoryState = JSON.parse(raw);
+      if (!memoryState!.adminUsers) memoryState!.adminUsers = [];
+      if (!memoryState!.adminSessions) memoryState!.adminSessions = [];
+      saveState();
       return memoryState!;
     }
   } catch (err) {
@@ -329,6 +384,150 @@ function saveState(): void {
 }
 
 export const dbStore = {
+  // --- ADMIN AUTHENTICATION & SESSIONS ---
+  isInitialAdminSetupNeeded(): boolean {
+    const state = loadState();
+    return !state.adminUsers || state.adminUsers.length === 0;
+  },
+
+  setupInitialAdmin(opts: {
+    email: string;
+    fullName: string;
+    password: string;
+  }): { token: string; admin: { email: string; fullName: string; role: "superadmin" | "admin" } } {
+    const state = loadState();
+    if (state.adminUsers && state.adminUsers.length > 0) {
+      throw new Error("प्रथम व्यवस्थापक पहले से पंजीकृत है। कृपया लॉगिन करें।");
+    }
+
+    const email = opts.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new Error("वैध ईमेल आईडी दर्ज करें (Enter a valid email address)");
+    }
+    const fullName = opts.fullName.trim();
+    if (fullName.length < 2) {
+      throw new Error("व्यवस्थापक का पूरा नाम दर्ज करें");
+    }
+    if (opts.password.length < 8 || !/[A-Za-z]/.test(opts.password) || !/\d/.test(opts.password)) {
+      throw new Error("पासवर्ड में कम से कम 8 अक्षर, एक अक्षर और एक संख्या होना अनिवार्य है");
+    }
+
+    const salt = generateSalt();
+    const passwordHash = hashPassword(opts.password, salt);
+    const admin: AdminUserRecord = {
+      id: `admin-${Date.now()}`,
+      email,
+      fullName,
+      role: "superadmin",
+      passwordHash,
+      salt,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+    };
+
+    state.adminUsers.push(admin);
+
+    const token = generateToken();
+    const session: AdminSessionRecord = {
+      token,
+      adminId: admin.id,
+      adminEmail: admin.email,
+      adminRole: admin.role,
+      fullName: admin.fullName,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 12 * 3600 * 1000).toISOString(),
+    };
+    state.adminSessions.push(session);
+
+    this.addAuditLog({
+      adminEmail: admin.email,
+      action: "INITIAL_ADMIN_SETUP",
+      entityType: "ADMIN_USER",
+      entityId: admin.id,
+      details: JSON.stringify({ email: admin.email, role: admin.role }),
+    });
+
+    saveState();
+    return { token, admin: { email: admin.email, fullName: admin.fullName, role: admin.role } };
+  },
+
+  loginAdmin(opts: {
+    email: string;
+    password: string;
+  }): { token: string; admin: { email: string; fullName: string; role: "superadmin" | "admin" } } {
+    const state = loadState();
+    const email = opts.email.trim().toLowerCase();
+    const admin = state.adminUsers.find((u) => u.email === email);
+
+    if (!admin) {
+      throw new Error("अमान्य ईमेल या पासवर्ड (Invalid email or password)");
+    }
+
+    const hashed = hashPassword(opts.password, admin.salt);
+    if (hashed !== admin.passwordHash) {
+      throw new Error("अमान्य ईमेल या पासवर्ड (Invalid email or password)");
+    }
+
+    // Clean expired sessions
+    state.adminSessions = (state.adminSessions || []).filter(
+      (s) => new Date(s.expiresAt).getTime() > Date.now(),
+    );
+
+    const token = generateToken();
+    const session: AdminSessionRecord = {
+      token,
+      adminId: admin.id,
+      adminEmail: admin.email,
+      adminRole: admin.role,
+      fullName: admin.fullName,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 12 * 3600 * 1000).toISOString(),
+    };
+    state.adminSessions.push(session);
+    admin.lastLoginAt = new Date().toISOString();
+
+    this.addAuditLog({
+      adminEmail: admin.email,
+      action: "ADMIN_LOGIN",
+      entityType: "ADMIN_SESSION",
+      entityId: session.adminId,
+      details: JSON.stringify({ email: admin.email }),
+    });
+
+    saveState();
+    return { token, admin: { email: admin.email, fullName: admin.fullName, role: admin.role } };
+  },
+
+  logoutAdmin(token: string): boolean {
+    const state = loadState();
+    if (!token) return true;
+    const session = state.adminSessions.find((s) => s.token === token);
+    if (session) {
+      this.addAuditLog({
+        adminEmail: session.adminEmail,
+        action: "ADMIN_LOGOUT",
+        entityType: "ADMIN_SESSION",
+        entityId: session.adminId,
+        details: JSON.stringify({ email: session.adminEmail }),
+      });
+    }
+    state.adminSessions = state.adminSessions.filter((s) => s.token !== token);
+    saveState();
+    return true;
+  },
+
+  verifyAdminSession(token?: string | null): AdminSessionRecord {
+    if (!token || typeof token !== "string" || token.trim().length === 0) {
+      throw new Error("अनधिकृत: व्यवस्थापक प्रमाणीकरण आवश्यक है (Unauthorized: Admin token required)");
+    }
+    const state = loadState();
+    const session = state.adminSessions.find((s) => s.token === token.trim());
+    if (!session || new Date(session.expiresAt).getTime() < Date.now()) {
+      throw new Error("सत्र समाप्त हो गया है। कृपया पुनः लॉगिन करें (Session expired, please sign in)");
+    }
+    return session;
+  },
+
   getSettings(): AdminSettingsRecord {
     return loadState().settings;
   },
@@ -411,6 +610,8 @@ export const dbStore = {
       // Check also active student assigned seats if admission is approved
       const assignedStudent = state.students.find(
         (s) =>
+          !s.isDeactivated &&
+          s.membershipStatus !== "cancelled" &&
           s.assignedSeatNumber === seat.number &&
           s.admissionStatus === "approved" &&
           s.membershipStartDate <= date &&
@@ -602,12 +803,25 @@ export const dbStore = {
     return null;
   },
 
-  getAllStudents(filter?: { search?: string; status?: string }): StudentRecord[] {
+  getAllStudents(filter?: {
+    search?: string;
+    status?: string;
+    membershipStatus?: string;
+    includeDeactivated?: boolean;
+  }): StudentRecord[] {
     const state = loadState();
     let list = [...state.students];
 
+    if (!filter?.includeDeactivated) {
+      list = list.filter((s) => !s.isDeactivated);
+    }
+
     if (filter?.status && filter.status !== "all") {
       list = list.filter((s) => s.admissionStatus === filter.status);
+    }
+
+    if (filter?.membershipStatus && filter.membershipStatus !== "all") {
+      list = list.filter((s) => s.membershipStatus === filter.membershipStatus);
     }
 
     if (filter?.search) {
@@ -661,6 +875,347 @@ export const dbStore = {
 
     saveState();
     return student;
+  },
+
+  updateStudentDetails(opts: {
+    studentIdCode: string;
+    fullName?: string;
+    parentName?: string | null;
+    mobile?: string;
+    email?: string;
+    address?: string;
+    examGoal?: string | null;
+    assignedSeatNumber?: string;
+    selectedPlan?: SlotType;
+    adminEmail?: string;
+  }): StudentRecord {
+    const state = loadState();
+    const student = state.students.find((s) => s.studentIdCode === opts.studentIdCode);
+    if (!student) throw new Error("छात्र रिकॉर्ड नहीं मिला");
+
+    if (opts.mobile && opts.mobile !== student.mobile) {
+      const dup = state.students.find(
+        (s) => s.mobile === opts.mobile && s.id !== student.id && !s.isDeactivated,
+      );
+      if (dup) {
+        throw new Error(`मोबाइल नंबर (${opts.mobile}) पहले से छात्र ${dup.studentIdCode} के लिए पंजीकृत है`);
+      }
+      student.mobile = opts.mobile.trim();
+    }
+
+    if (opts.fullName) student.fullName = opts.fullName.trim();
+    if (opts.parentName !== undefined) student.parentName = opts.parentName?.trim() || null;
+    if (opts.email) student.email = opts.email.trim();
+    if (opts.address) student.address = opts.address.trim();
+    if (opts.examGoal !== undefined) student.examGoal = opts.examGoal?.trim() || null;
+
+    // Check if seat or plan changed
+    const newSeat = opts.assignedSeatNumber || student.assignedSeatNumber;
+    const newPlan = opts.selectedPlan || student.selectedPlan;
+
+    if (newSeat !== student.assignedSeatNumber || newPlan !== student.selectedPlan) {
+      // Validate availability on target seat (ignoring student's own booking)
+      const avail = this.getSeatAvailability(student.admissionDate, newPlan);
+      const target = avail.find((s) => s.number === newSeat);
+      if (target && !target.isAvailable && target.number !== student.assignedSeatNumber) {
+        throw new Error(`सीट ${newSeat} इस स्लॉट (${MEMBERSHIP_PLANS[newPlan].nameEn}) के लिए उपलब्ध नहीं है`);
+      }
+
+      student.assignedSeatNumber = newSeat;
+      student.selectedPlan = newPlan;
+
+      // Update active booking
+      const activeBooking = state.bookings.find(
+        (b) => b.studentId === student.id && (b.status === "confirmed" || b.status === "reserved"),
+      );
+      if (activeBooking) {
+        activeBooking.seatNumber = newSeat;
+        activeBooking.slot = newPlan;
+        activeBooking.updatedAt = new Date().toISOString();
+      }
+    }
+
+    student.updatedAt = new Date().toISOString();
+
+    this.addAuditLog({
+      adminEmail: opts.adminEmail || "Admin",
+      action: "UPDATE_STUDENT_DETAILS",
+      entityType: "STUDENT",
+      entityId: student.studentIdCode,
+      details: JSON.stringify({
+        fullName: student.fullName,
+        seat: student.assignedSeatNumber,
+        plan: student.selectedPlan,
+      }),
+    });
+
+    saveState();
+    return student;
+  },
+
+  suspendStudent(opts: {
+    studentIdCode: string;
+    reason: string;
+    adminEmail?: string;
+  }): StudentRecord {
+    const state = loadState();
+    const student = state.students.find((s) => s.studentIdCode === opts.studentIdCode);
+    if (!student) throw new Error("छात्र रिकॉर्ड नहीं मिला");
+    if (!opts.reason || opts.reason.trim().length < 3) {
+      throw new Error("सदस्यता निलंबित करने का कारण लिखना अनिवार्य है");
+    }
+
+    student.membershipStatus = "suspended";
+    student.updatedAt = new Date().toISOString();
+
+    this.addAuditLog({
+      adminEmail: opts.adminEmail || "Admin",
+      action: "SUSPEND_STUDENT_MEMBERSHIP",
+      entityType: "STUDENT",
+      entityId: student.studentIdCode,
+      details: JSON.stringify({ reason: opts.reason }),
+    });
+
+    saveState();
+    return student;
+  },
+
+  reactivateStudent(opts: {
+    studentIdCode: string;
+    adminEmail?: string;
+  }): StudentRecord {
+    const state = loadState();
+    const student = state.students.find((s) => s.studentIdCode === opts.studentIdCode);
+    if (!student) throw new Error("छात्र रिकॉर्ड नहीं मिला");
+
+    student.isDeactivated = false;
+    student.deactivatedAt = undefined;
+    student.deactivationReason = undefined;
+    student.membershipStatus = "active";
+    student.updatedAt = new Date().toISOString();
+
+    this.addAuditLog({
+      adminEmail: opts.adminEmail || "Admin",
+      action: "REACTIVATE_STUDENT_MEMBERSHIP",
+      entityType: "STUDENT",
+      entityId: student.studentIdCode,
+      details: JSON.stringify({ status: "active", reactivatedAt: student.updatedAt }),
+    });
+
+    saveState();
+    return student;
+  },
+
+  permanentlyDeleteStudent(opts: {
+    studentIdCode: string;
+    confirmationCode: string;
+    reason: string;
+    adminEmail?: string;
+  }): { success: boolean; message: string; deletedStudent: { idCode: string; name: string } } {
+    const state = loadState();
+    const code = opts.studentIdCode.trim().toUpperCase();
+    const student = state.students.find((s) => s.studentIdCode.toUpperCase() === code);
+    if (!student) throw new Error("छात्र रिकॉर्ड नहीं मिला");
+
+    const conf = opts.confirmationCode.trim();
+    if (conf !== code && conf.toUpperCase() !== student.fullName.trim().toUpperCase()) {
+      throw new Error(`हटाने की पुष्टि के लिए छात्र की आईडी "${code}" या नाम दर्ज करें`);
+    }
+
+    if (!opts.reason || opts.reason.trim().length < 5) {
+      throw new Error("स्थाई रूप से हटाने का कारण लिखना अनिवार्य है (कम से कम 5 अक्षर)");
+    }
+
+    // 1. Release physical seat holds / active bookings
+    const studentBookings = state.bookings.filter(
+      (b) => b.studentId === student.id || b.studentName === student.fullName,
+    );
+    for (const b of studentBookings) {
+      if (b.status === "confirmed" || b.status === "reserved") {
+        b.status = "cancelled";
+        b.updatedAt = new Date().toISOString();
+      }
+    }
+
+    // 2. Preserve financial integrity: retain payment records with audit notation
+    const studentPayments = state.payments.filter((p) => p.studentIdCode === student.studentIdCode);
+    for (const p of studentPayments) {
+      p.adminNote = p.adminNote
+        ? `${p.adminNote} | [खाता स्थाई रूप से हटाया गया]: ${opts.reason}`
+        : `[खाता स्थाई रूप से हटाया गया]: ${opts.reason}`;
+      p.updatedAt = new Date().toISOString();
+    }
+
+    // 3. Preserve attendance history with archived notation
+    const studentAttendance = state.attendance.filter((a) => a.studentIdCode === student.studentIdCode);
+    for (const a of studentAttendance) {
+      a.correctionReason = a.correctionReason
+        ? `${a.correctionReason} | [Deleted Student Record]`
+        : `[Deleted Student Record]`;
+    }
+
+    // 4. Remove student record from active database
+    state.students = state.students.filter((s) => s.id !== student.id);
+
+    // 5. Audit Log
+    this.addAuditLog({
+      adminEmail: opts.adminEmail || "Admin",
+      action: "PERMANENTLY_DELETE_STUDENT",
+      entityType: "STUDENT",
+      entityId: code,
+      details: JSON.stringify({
+        fullName: student.fullName,
+        mobile: student.mobile,
+        reason: opts.reason.trim(),
+        preservedPaymentsCount: studentPayments.length,
+        preservedAttendanceCount: studentAttendance.length,
+        deletedAt: new Date().toISOString(),
+      }),
+    });
+
+    saveState();
+    return {
+      success: true,
+      message: `छात्र ${student.fullName} (${code}) का रिकॉर्ड स्थाई रूप से हटा दिया गया एवं वित्तीय इतिहास सुरक्षित रखा गया`,
+      deletedStudent: { idCode: code, name: student.fullName },
+    };
+  },
+
+  deactivateStudent(opts: {
+    studentIdCode: string;
+    reason: string;
+    adminEmail?: string;
+  }): StudentRecord {
+    const state = loadState();
+    const student = state.students.find((s) => s.studentIdCode === opts.studentIdCode);
+    if (!student) throw new Error("छात्र रिकॉर्ड नहीं मिला");
+    if (!opts.reason || opts.reason.trim().length < 5) {
+      throw new Error("छात्र रिकॉर्ड निष्क्रिय करने का कारण लिखना अनिवार्य है (कम से कम 5 अक्षर)");
+    }
+
+    student.isDeactivated = true;
+    student.deactivatedAt = new Date().toISOString();
+    student.deactivationReason = opts.reason.trim();
+    student.membershipStatus = "cancelled";
+    student.updatedAt = new Date().toISOString();
+
+    // Release any active seat bookings so desk is immediately available for others
+    const activeBookings = state.bookings.filter(
+      (b) => b.studentId === student.id && (b.status === "confirmed" || b.status === "reserved"),
+    );
+    for (const b of activeBookings) {
+      b.status = "cancelled";
+      b.updatedAt = new Date().toISOString();
+    }
+
+    this.addAuditLog({
+      adminEmail: opts.adminEmail || "Admin",
+      action: "DEACTIVATE_STUDENT",
+      entityType: "STUDENT",
+      entityId: student.studentIdCode,
+      details: JSON.stringify({ reason: opts.reason }),
+    });
+
+    saveState();
+    return student;
+  },
+
+  reassignSeatBooking(opts: {
+    studentIdCode: string;
+    newSeatNumber: string;
+    reason: string;
+    adminEmail?: string;
+  }): BookingRecord {
+    const state = loadState();
+    const student = state.students.find((s) => s.studentIdCode === opts.studentIdCode);
+    if (!student) throw new Error("छात्र रिकॉर्ड नहीं मिला");
+    if (!opts.reason || opts.reason.trim().length < 3) {
+      throw new Error("सीट पुनर्वितरण का कारण लिखना अनिवार्य है");
+    }
+
+    const avail = this.getSeatAvailability(student.admissionDate, student.selectedPlan);
+    const target = avail.find((s) => s.number === opts.newSeatNumber);
+    if (!target || !target.isAvailable) {
+      throw new Error(`सीट ${opts.newSeatNumber} इस स्लॉट (${student.selectedPlan}) के लिए उपलब्ध नहीं है`);
+    }
+
+    const oldSeat = student.assignedSeatNumber;
+    student.assignedSeatNumber = opts.newSeatNumber;
+    student.updatedAt = new Date().toISOString();
+
+    let booking = state.bookings.find(
+      (b) => b.studentId === student.id && (b.status === "confirmed" || b.status === "reserved"),
+    );
+    if (booking) {
+      booking.seatNumber = opts.newSeatNumber;
+      booking.updatedAt = new Date().toISOString();
+    } else {
+      const year = new Date().getFullYear();
+      booking = {
+        id: `bk-${Date.now()}`,
+        bookingCode: `SGL-${year}-${(state.nextBookingSeq++).toString().padStart(5, "0")}`,
+        seatNumber: opts.newSeatNumber,
+        studentId: student.id,
+        studentName: student.fullName,
+        studentMobile: student.mobile,
+        bookingDate: student.admissionDate,
+        slot: student.selectedPlan,
+        amount: MEMBERSHIP_PLANS[student.selectedPlan].priceMonthly,
+        status: "confirmed",
+        reservedUntil: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      state.bookings.push(booking);
+    }
+
+    this.addAuditLog({
+      adminEmail: opts.adminEmail || "Admin",
+      action: "REASSIGN_SEAT",
+      entityType: "BOOKING",
+      entityId: booking.bookingCode,
+      details: JSON.stringify({
+        student: student.studentIdCode,
+        fromSeat: oldSeat,
+        toSeat: opts.newSeatNumber,
+        reason: opts.reason,
+      }),
+    });
+
+    saveState();
+    return booking;
+  },
+
+  cancelSeatBooking(opts: {
+    bookingCode: string;
+    reason: string;
+    adminEmail?: string;
+  }): BookingRecord {
+    const state = loadState();
+    const booking = state.bookings.find((b) => b.bookingCode === opts.bookingCode);
+    if (!booking) throw new Error("बुकिंग रिकॉर्ड नहीं मिला");
+    if (!opts.reason || opts.reason.trim().length < 3) {
+      throw new Error("बुकिंग रद्द करने का कारण लिखना अनिवार्य है");
+    }
+
+    booking.status = "cancelled";
+    booking.updatedAt = new Date().toISOString();
+
+    this.addAuditLog({
+      adminEmail: opts.adminEmail || "Admin",
+      action: "CANCEL_BOOKING",
+      entityType: "BOOKING",
+      entityId: booking.bookingCode,
+      details: JSON.stringify({ reason: opts.reason, seat: booking.seatNumber }),
+    });
+
+    saveState();
+    return booking;
+  },
+
+  getAllBookings(): BookingRecord[] {
+    const state = loadState();
+    return [...state.bookings].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
   // --- PAYMENTS & MANUAL VERIFICATION ---
@@ -809,6 +1364,12 @@ export const dbStore = {
       student = state.students.find((s) => s.mobile === opts.studentIdCode.trim());
     }
     if (!student) throw new Error("छात्र आईडी या पंजीकृत मोबाइल नंबर मान्य नहीं है");
+    if (student.isDeactivated) {
+      throw new Error("आपका छात्र खाता निष्क्रिय (Deactivated) है। कृपया लाइब्रेरी व्यवस्थापक से संपर्क करें।");
+    }
+    if (student.membershipStatus === "suspended") {
+      throw new Error("आपकी सदस्यता वर्तमान में निलंबित (Suspended) है। कृपया व्यवस्थापक से संपर्क करें।");
+    }
     if (student.admissionStatus !== "approved") {
       throw new Error("एडमिशन स्वीकृत होने के बाद ही उपस्थिति दर्ज की जा सकती है");
     }
@@ -954,6 +1515,9 @@ export const dbStore = {
       (s) => s.studentIdCode.toUpperCase() === opts.studentIdCode.trim().toUpperCase(),
     );
     if (!student) throw new Error("छात्र आईडी मान्य नहीं है");
+    if (student.isDeactivated) {
+      throw new Error("निष्क्रिय (Deactivated) छात्र खाते का नवीनीकरण नहीं किया जा सकता। कृपया व्यवस्थापक से संपर्क करें।");
+    }
 
     const renewal: RenewalRecord = {
       id: `rnw-${Date.now()}`,
